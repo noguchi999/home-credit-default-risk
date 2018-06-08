@@ -186,7 +186,7 @@ def train_model(data_, test_, y_, folds_):
             min_split_gain=0.0222415,
             min_child_weight=39.3259775,
             silent=-1,
-            verbose=-1,
+            verbose=-1, 
         )
         
         clf.fit(trn_x, trn_y, 
