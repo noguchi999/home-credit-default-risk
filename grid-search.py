@@ -4,12 +4,14 @@ import numpy as np
 from sklearn.metrics import roc_auc_score, precision_recall_curve, roc_curve, average_precision_score
 from sklearn.model_selection import KFold
 from lightgbm import LGBMClassifier
+from sklearn.model_selection import GridSearchCV
 
 import matplotlib.pyplot as plt
 import seaborn as sns
 import gc
 
-PATH = './home-credit-default-risk'
+# PATH = './home-credit-default-risk'
+PATH = '/Users/pdesadmin/.kaggle/competitions/home-credit-default-risk'
 
 def build_model_input():
     buro_bal = pd.read_csv(PATH+'/bureau_balance.csv')
@@ -38,7 +40,6 @@ def build_model_input():
     buro_credit_type_dum = pd.get_dummies(buro.CREDIT_TYPE, prefix='ty_')
     
     buro_full = pd.concat([buro, buro_credit_active_dum, buro_credit_currency_dum, buro_credit_type_dum], axis=1)
-    # buro_full.columns = ['buro_' + f_ for f_ in buro_full.columns]
     
     del buro_credit_active_dum, buro_credit_currency_dum, buro_credit_type_dum
     gc.collect()
@@ -161,144 +162,34 @@ def build_model_input():
     return data, test, y
 
 
-def train_model(data_, test_, y_, folds_):
+def grid_search(data_, test_, y_):        
+    clf = LGBMClassifier()
+    params = {
+        'n_estimators': [100, 1000, 5000, 10000, 50000],
+        'learning_rate': [0.01, 0.1, 0.3, 0.8],
+        'num_leaves': [10, 30, 50, 60, 80, 100],
+        'colsample_bytree': [0.1, 0.3, 0.5, 0.8, 0.95],
+        'subsample': [0.1, 0.3, 0.5, 0.8, 0.95],
+        'max_depth': [10, 30, 50, 80, 100],
+        'reg_alpha': [0.01, 0.04, 0.08, 0.1, 0.3, 0.6, 0.9],
+        'reg_lambda': [0.01, 0.04, 0.08, 0.1, 0.3, 0.6, 0.9],
+        'min_split_gain': [0.01, 0.04, 0.08, 0.1, 0.3, 0.6, 0.9],
+        'min_child_weight': [0.5, 5, 30, 300],
+        'silent': [-1],
+        'verbose': [-1]
+    }
+    grid_search = GridSearchCV(clf, param_grid=params, cv=10)
+    
+    grid_search.fit(data_, y_)
+    
+    print(grid_search.best_score_)
+    print(grid_search.best_params_)
 
-    oof_preds = np.zeros(data_.shape[0])
-    sub_preds = np.zeros(test_.shape[0])
-    
-    feature_importance_df = pd.DataFrame()
-    
-    feats = [f for f in data_.columns if f not in ['SK_ID_CURR']]
-    
-    for n_fold, (trn_idx, val_idx) in enumerate(folds_.split(data_)):
-        trn_x, trn_y = data_[feats].iloc[trn_idx], y_.iloc[trn_idx]
-        val_x, val_y = data_[feats].iloc[val_idx], y_.iloc[val_idx]
-        
-        clf = LGBMClassifier(
-            n_estimators=8000,
-            learning_rate=0.01,
-            colsample_bytree=0.9497036,
-            subsample=0.8715623,
-            max_depth=7,
-            num_leaves=80,
-            min_data_in_leaf=300,
-            reg_alpha=0.041545473,
-            reg_lambda=0.0735294,
-            min_split_gain=0.0222415,
-            min_child_weight=39.3259775,
-            silent=-1,
-            verbose=-1,
-        )
-        
-        clf.fit(trn_x, trn_y, 
-                eval_set= [(trn_x, trn_y), (val_x, val_y)], 
-                eval_metric='auc', verbose=100, early_stopping_rounds=100
-               )
-        
-        oof_preds[val_idx] = clf.predict_proba(val_x, num_iteration=clf.best_iteration_)[:, 1]
-        sub_preds += clf.predict_proba(test_[feats], num_iteration=clf.best_iteration_)[:, 1] / folds_.n_splits
-        
-        fold_importance_df = pd.DataFrame()
-        fold_importance_df["feature"] = feats
-        fold_importance_df["importance"] = clf.feature_importances_
-        fold_importance_df["fold"] = n_fold + 1
-        feature_importance_df = pd.concat([feature_importance_df, fold_importance_df], axis=0)
-        
-        print('Fold %2d AUC : %.6f' % (n_fold + 1, roc_auc_score(val_y, oof_preds[val_idx])))
-        del clf, trn_x, trn_y, val_x, val_y
-        gc.collect()
-        
-    print('Full AUC score %.6f' % roc_auc_score(y, oof_preds)) 
-    
-    test_['TARGET'] = sub_preds
-
-    return oof_preds, test_[['SK_ID_CURR', 'TARGET']], feature_importance_df
-    
-
-def display_importances(feature_importance_df_):
-    # Plot feature importances
-    cols = feature_importance_df_[["feature", "importance"]].groupby("feature").mean().sort_values(
-        by="importance", ascending=False)[:50].index
-    
-    best_features = feature_importance_df_.loc[feature_importance_df_.feature.isin(cols)]
-    
-    plt.figure(figsize=(8,10))
-    sns.barplot(x="importance", y="feature", 
-                data=best_features.sort_values(by="importance", ascending=False))
-    plt.title('LightGBM Features (avg over folds)')
-    plt.tight_layout()
-    plt.savefig('lgbm_importances.png')
-
-
-def display_roc_curve(y_, oof_preds_, folds_idx_):
-    # Plot ROC curves
-    plt.figure(figsize=(6,6))
-    scores = [] 
-    for n_fold, (_, val_idx) in enumerate(folds_idx_):  
-        # Plot the roc curve
-        fpr, tpr, thresholds = roc_curve(y_.iloc[val_idx], oof_preds_[val_idx])
-        score = roc_auc_score(y_.iloc[val_idx], oof_preds_[val_idx])
-        scores.append(score)
-        plt.plot(fpr, tpr, lw=1, alpha=0.3, label='ROC fold %d (AUC = %0.4f)' % (n_fold + 1, score))
-    
-    plt.plot([0, 1], [0, 1], linestyle='--', lw=2, color='r', label='Luck', alpha=.8)
-    fpr, tpr, thresholds = roc_curve(y_, oof_preds_)
-    score = roc_auc_score(y_, oof_preds_)
-    plt.plot(fpr, tpr, color='b',
-             label='Avg ROC (AUC = %0.4f $\pm$ %0.4f)' % (score, np.std(scores)),
-             lw=2, alpha=.8)
-    
-    plt.xlim([-0.05, 1.05])
-    plt.ylim([-0.05, 1.05])
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title('LightGBM ROC Curve')
-    plt.legend(loc="lower right")
-    plt.tight_layout()
-    
-    plt.savefig('roc_curve.png')
-
-
-def display_precision_recall(y_, oof_preds_, folds_idx_):
-    # Plot ROC curves
-    plt.figure(figsize=(6,6))
-    
-    scores = [] 
-    for n_fold, (_, val_idx) in enumerate(folds_idx_):  
-        # Plot the roc curve
-        fpr, tpr, thresholds = roc_curve(y_.iloc[val_idx], oof_preds_[val_idx])
-        score = average_precision_score(y_.iloc[val_idx], oof_preds_[val_idx])
-        scores.append(score)
-        plt.plot(fpr, tpr, lw=1, alpha=0.3, label='AP fold %d (AUC = %0.4f)' % (n_fold + 1, score))
-    
-    precision, recall, thresholds = precision_recall_curve(y_, oof_preds_)
-    score = average_precision_score(y_, oof_preds_)
-    plt.plot(precision, recall, color='b',
-             label='Avg ROC (AUC = %0.4f $\pm$ %0.4f)' % (score, np.std(scores)),
-             lw=2, alpha=.8)
-    
-    plt.xlim([-0.05, 1.05])
-    plt.ylim([-0.05, 1.05])
-    plt.xlabel('Recall')
-    plt.ylabel('Precision')
-    plt.title('LightGBM Recall / Precision')
-    plt.legend(loc="best")
-    plt.tight_layout()
-    
-    plt.savefig('recall_precision_curve.png')
+    del clf
+    gc.collect()        
 
 if __name__ == '__main__':
     gc.enable()
-    # Build model inputs
+
     data, test, y = build_model_input()
-    # Create Folds
-    folds = KFold(n_splits=5, shuffle=True, random_state=546789)
-    # Train model and get oof and test predictions
-    oof_preds, test_preds, importances = train_model(data, test, y, folds)
-    # Save test predictions
-    test_preds.to_csv('submission_201806061618.csv', index=False)
-    # Display a few graphs
-    folds_idx = [(trn_idx, val_idx) for trn_idx, val_idx in folds.split(data)]
-    display_importances(feature_importance_df_=importances)
-    display_roc_curve(y_=y, oof_preds_=oof_preds, folds_idx_=folds_idx)
-    display_precision_recall(y_=y, oof_preds_=oof_preds, folds_idx_=folds_idx)
+    grid_search(data, test, y)
