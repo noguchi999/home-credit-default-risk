@@ -59,8 +59,6 @@ def application_train_test(num_rows = None, nan_as_category = True):
     df['INCOME_PER_PERSON'] = df['AMT_INCOME_TOTAL'] / df['CNT_FAM_MEMBERS']
     df['ANNUITY_INCOME_PERC'] = df['AMT_ANNUITY'] / df['AMT_INCOME_TOTAL']
 
-    df["EXT_SOURCE_4"] = (df["EXT_SOURCE_1"]+df["EXT_SOURCE_2"]+df["EXT_SOURCE_3"])/3
-
     del test_df
     gc.collect()
     return df
